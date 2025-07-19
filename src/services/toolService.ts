@@ -114,7 +114,7 @@ class ToolService {
       }
 
       const payload: ImageGenRequest = {
-        model: 'provider-5/gpt-image-1',
+        model: 'provider-3/gpt-image-1',
         prompt,
         n: options.n || 1,
         size: options.size || '1024x1024',
