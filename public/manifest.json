@@ -1,29 +1,32 @@
 {
-  "name": "Kana - Know More Be More",
-  "short_name": "Kana",
-  "description": "India's first Intelligent AI Chatbot with Interactive Artifacts",
-  "start_url": "/",
-  "display": "standalone",
-  "background_color": "#000000",
+  "name": "CloakedChat - AI Chatbot",
+  "short_name": "CloakedChat",
+  "description": "Powerful AI Chatbot powered by Horizon Alpha",
   "theme_color": "#000000",
-  "orientation": "portrait-primary",
+  "background_color": "#000000",
+  "display": "standalone",
+  "orientation": "portrait",
+  "scope": "/",
+  "start_url": "/",
   "icons": [
     {
-      "src": "/icon-192.png",
+      "src": "pwa-192x192.png",
       "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any maskable"
+      "type": "image/png"
     },
     {
-      "src": "/icon-512.png",
+      "src": "pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "pwa-512x512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
     }
   ],
-  "categories": ["productivity", "education", "utilities"],
+  "categories": ["productivity", "utilities"],
   "lang": "en",
-  "dir": "ltr",
-  "scope": "/",
-  "prefer_related_applications": false
+  "dir": "ltr"
 }

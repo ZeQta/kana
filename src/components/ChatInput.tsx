@@ -1,23 +1,47 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Send, Loader, Paperclip, Zap, Brain } from 'lucide-react';
+import { Send, Loader, Paperclip, X, FileText, Image, File } from 'lucide-react';
+import { useDropzone } from 'react-dropzone';
+import { motion, AnimatePresence } from 'framer-motion';
+import { AVAILABLE_MODELS } from '../services/aiService';
+import { fileService } from '../services/fileService';
+import type { UploadedFile } from '../types';
 
 interface ChatInputProps {
   onSendMessage: (message: string) => void;
   disabled?: boolean;
   placeholder?: string;
-  currentModel: 'gemini-2.5-flash' | 'gemini-2.5-pro';
-  onModelChange: (model: 'gemini-2.5-flash' | 'gemini-2.5-pro') => void;
+  currentModel: string;
+  onModelChange: (model: string) => void;
+  onFileUpload: (files: File[]) => void;
+  uploadedFiles: UploadedFile[];
+  onRemoveFile: (fileId: string) => void;
 }
 
 export function ChatInput({ 
   onSendMessage, 
   disabled, 
-  placeholder = "Message Kana...",
+  placeholder = "Message CloakedChat...",
   currentModel,
-  onModelChange
+  onModelChange,
+  onFileUpload,
+  uploadedFiles,
+  onRemoveFile
 }: ChatInputProps) {
   const [message, setMessage] = useState('');
+  const [isModelSelectorOpen, setIsModelSelectorOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({
+    onDrop: onFileUpload,
+    accept: {
+      'image/*': ['.jpeg', '.jpg', '.png', '.gif', '.webp'],
+      'application/pdf': ['.pdf'],
+      'text/*': ['.txt', '.md', '.csv', '.json'],
+      'application/json': ['.json']
+    },
+    maxSize: fileService.getMaxFileSize(),
+    multiple: true
+  });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -43,50 +67,119 @@ export function ChatInput({
     }
   }, [message]);
 
-  return (
-    <div className="chat-input-container border-t border-gray-800/50 bg-black/80 backdrop-blur-xl p-3 md:p-4 lg:p-6 safe-area-inset-bottom">
-      <form onSubmit={handleSubmit} className="max-w-4xl mx-auto">
-        <div className="relative">
-          {/* Model Selector */}
-          <div className="flex items-center justify-center mb-3 md:mb-4">
-            <div className="flex items-center gap-1 bg-gray-900/80 rounded-xl md:rounded-2xl p-1 border border-gray-700/50 shadow-2xl backdrop-blur-xl">
-              <button
-                type="button"
-                onClick={() => onModelChange('gemini-2.5-flash')}
-                className={`flex items-center gap-2 px-3 md:px-4 py-2 rounded-lg md:rounded-xl text-xs md:text-sm font-medium transition-all duration-300 ${
-                  currentModel === 'gemini-2.5-flash'
-                    ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/25 scale-105'
-                    : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
-                }`}
-              >
-                <Zap size={14} className="md:w-4 md:h-4" />
-                <span className="hidden sm:inline">Kana</span>
-              </button>
-              
-              <button
-                type="button"
-                onClick={() => onModelChange('gemini-2.5-pro')}
-                className={`flex items-center gap-2 px-3 md:px-4 py-2 rounded-lg md:rounded-xl text-xs md:text-sm font-medium transition-all duration-300 ${
-                  currentModel === 'gemini-2.5-pro'
-                    ? 'bg-purple-600 text-white shadow-lg shadow-purple-600/25 scale-105'
-                    : 'text-gray-400 hover:text-white hover:bg-gray-800/50'
-                }`}
-              >
-                <Brain size={14} className="md:w-4 md:h-4" />
-                <span className="hidden sm:inline">Agentic</span>
-              </button>
-            </div>
-          </div>
+  const currentModelInfo = AVAILABLE_MODELS.find(m => m.id === currentModel);
 
-          {/* Input Container */}
-          <div className="relative flex items-end gap-2 md:gap-3 bg-gray-900/80 rounded-2xl md:rounded-3xl p-3 md:p-4 border border-gray-700/50 shadow-2xl backdrop-blur-xl">
+  return (
+    <div className="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
+      <div className="max-w-4xl mx-auto">
+        {/* Model Selector */}
+        <div className="flex items-center justify-center mb-4">
+          <div className="relative">
             <button
               type="button"
-              className="flex-shrink-0 w-10 h-10 md:w-12 md:h-12 bg-gray-800/80 hover:bg-gray-700/80 text-gray-400 hover:text-white rounded-xl md:rounded-2xl flex items-center justify-center transition-all duration-200 border border-gray-600/30 hover:border-gray-500/50 shadow-lg"
+              onClick={() => setIsModelSelectorOpen(!isModelSelectorOpen)}
+              className="flex items-center gap-2 px-4 py-2 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors text-sm font-medium text-gray-700 dark:text-gray-300"
             >
-              <Paperclip size={16} className="md:w-5 md:h-5" />
+              <span>{currentModelInfo?.name || 'Horizon Alpha'}</span>
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                {currentModelInfo?.provider || 'Cloaked AI'}
+              </span>
             </button>
+
+            <AnimatePresence>
+              {isModelSelectorOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="absolute bottom-full left-0 mb-2 w-80 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-lg z-50"
+                >
+                  <div className="p-3">
+                    <h3 className="text-sm font-medium text-gray-900 dark:text-white mb-2">Select Model</h3>
+                    <div className="space-y-1">
+                      {AVAILABLE_MODELS.map((model) => (
+                        <button
+                          key={model.id}
+                          onClick={() => {
+                            onModelChange(model.id);
+                            setIsModelSelectorOpen(false);
+                          }}
+                          className={`w-full text-left p-2 rounded-md text-sm transition-colors ${
+                            currentModel === model.id
+                              ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300'
+                              : 'hover:bg-gray-50 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'
+                          }`}
+                        >
+                          <div className="font-medium">{model.name}</div>
+                          <div className="text-xs text-gray-500 dark:text-gray-400">{model.description}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+        </div>
+
+        {/* Uploaded Files */}
+        <AnimatePresence>
+          {uploadedFiles.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="mb-4"
+            >
+              <div className="flex flex-wrap gap-2">
+                {uploadedFiles.map((file) => (
+                  <motion.div
+                    key={file.id}
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    exit={{ opacity: 0, scale: 0.8 }}
+                    className="flex items-center gap-2 px-3 py-2 bg-gray-100 dark:bg-gray-700 rounded-lg text-sm"
+                  >
+                    <span className="text-lg">{fileService.getFileIcon(file.type)}</span>
+                    <span className="text-gray-700 dark:text-gray-300 truncate max-w-32">
+                      {file.name}
+                    </span>
+                    <span className="text-xs text-gray-500 dark:text-gray-400">
+                      {fileService.formatFileSize(file.size)}
+                    </span>
+                    <button
+                      onClick={() => onRemoveFile(file.id)}
+                      className="p-1 hover:bg-gray-200 dark:hover:bg-gray-600 rounded transition-colors"
+                    >
+                      <X size={14} className="text-gray-500 dark:text-gray-400" />
+                    </button>
+                  </motion.div>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Input Container */}
+        <form onSubmit={handleSubmit}>
+          <div className="relative flex items-end gap-3 bg-gray-50 dark:bg-gray-700 rounded-xl p-3 border border-gray-200 dark:border-gray-600">
+            {/* File Upload Button */}
+            <div {...getRootProps()} className="flex-shrink-0">
+              <input {...getInputProps()} />
+              <button
+                type="button"
+                className={`w-10 h-10 flex items-center justify-center rounded-lg transition-colors ${
+                  isDragActive
+                    ? 'bg-blue-100 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
+                    : 'bg-gray-100 dark:bg-gray-600 hover:bg-gray-200 dark:hover:bg-gray-500 text-gray-600 dark:text-gray-300'
+                }`}
+                title="Upload files"
+              >
+                <Paperclip size={18} />
+              </button>
+            </div>
             
+            {/* Text Input */}
             <div className="flex-1 relative">
               <textarea
                 ref={textareaRef}
@@ -96,29 +189,48 @@ export function ChatInput({
                 placeholder={placeholder}
                 disabled={disabled}
                 rows={1}
-                className="w-full px-4 md:px-6 py-3 md:py-4 bg-transparent border-0 resize-none focus:outline-none text-white placeholder-gray-500 disabled:opacity-50 disabled:cursor-not-allowed text-sm md:text-lg leading-relaxed"
+                className="w-full px-4 py-3 bg-transparent border-0 resize-none focus:outline-none text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 disabled:opacity-50 disabled:cursor-not-allowed text-sm leading-relaxed"
                 style={{ minHeight: '44px', maxHeight: '200px' }}
               />
             </div>
-            
+
+            {/* Send Button */}
             <button
               type="submit"
-              disabled={!message.trim() || disabled}
-              className="flex-shrink-0 w-10 h-10 md:w-12 md:h-12 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:from-gray-700 disabled:to-gray-700 text-white rounded-xl md:rounded-2xl flex items-center justify-center transition-all duration-200 disabled:cursor-not-allowed shadow-lg hover:shadow-xl hover:scale-105 disabled:scale-100"
+              disabled={disabled || !message.trim()}
+              className="flex-shrink-0 w-10 h-10 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 dark:disabled:bg-gray-600 text-white rounded-lg flex items-center justify-center transition-colors disabled:cursor-not-allowed"
             >
               {disabled ? (
-                <Loader size={16} className="md:w-5 md:h-5 animate-spin" />
+                <Loader size={18} className="animate-spin" />
               ) : (
-                <Send size={16} className="md:w-5 md:h-5" />
+                <Send size={18} />
               )}
             </button>
           </div>
-          
-          <div className="mt-2 md:mt-3 text-xs text-gray-500 text-center">
-            Press Enter to send, Shift+Enter for new line
-          </div>
-        </div>
-      </form>
+        </form>
+
+        {/* Drag Overlay */}
+        <AnimatePresence>
+          {isDragActive && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-blue-500/20 backdrop-blur-sm z-50 flex items-center justify-center"
+            >
+              <div className="bg-white dark:bg-gray-800 rounded-lg p-8 text-center shadow-lg">
+                <FileText size={48} className="mx-auto mb-4 text-blue-600 dark:text-blue-400" />
+                <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
+                  Drop files here
+                </h3>
+                <p className="text-gray-600 dark:text-gray-400">
+                  Upload images, PDFs, or text files to analyze
+                </p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
     </div>
   );
 }

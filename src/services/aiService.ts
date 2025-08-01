@@ -1,255 +1,413 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
-import type { Message, StreamResponse, Artifact } from '../types';
-import { artifactManager } from './ArtifactManager';
-import { toolService } from './toolService';
+import axios from 'axios';
+import type { Message, Artifact, ToolCall, ToolResult, ChatConfig } from '../types';
 
-const apiKey = import.meta.env.VITE_GOOGLE_API_KEY;
+const OPENROUTER_API_KEY = import.meta.env.VITE_OPENROUTER_API_KEY;
+const OPENROUTER_BASE_URL = import.meta.env.VITE_OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
 
-if (!apiKey) {
-  console.error('Google API key not found. Please add VITE_GOOGLE_API_KEY to your .env file');
+// Default system prompt for CloakedChat
+const DEFAULT_SYSTEM_PROMPT = `You are CloakedChat, a powerful AI assistant powered by Horizon Alpha. You have access to advanced capabilities including:
+
+1. **Artifact Creation**: You can create interactive artifacts using the create_artifacts function. These can be:
+   - HTML applications and games
+   - React components
+   - Python scripts
+   - Markdown documents
+   - Charts and visualizations
+   - Code examples in various languages
+
+2. **Multimodal Analysis**: You can analyze images, PDFs, and other file types uploaded by users.
+
+3. **Advanced Formatting**: You can provide responses with:
+   - Rich markdown formatting
+   - Code syntax highlighting
+   - Tables and columns
+   - Embedded links and references
+   - Mathematical expressions
+
+4. **Interactive Features**: You can create:
+   - Interactive games and applications
+   - Data visualizations
+   - Educational content
+   - Prototypes and demos
+
+When creating artifacts, use descriptive names and provide comprehensive content. Always explain what the artifact does and how to use it.
+
+Be helpful, creative, and engaging in your responses. Provide detailed explanations and examples when appropriate.`;
+
+interface StreamChunk {
+  content: string;
+  artifacts?: Artifact[];
+  toolResults?: ToolResult[];
+  isThinking?: boolean;
+  finishReason?: string;
 }
 
-const genAI = new GoogleGenerativeAI(apiKey || '');
+interface OpenRouterMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string | Array<{
+    type: 'text' | 'image_url';
+    text?: string;
+    image_url?: {
+      url: string;
+    };
+  }>;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+}
+
+interface OpenRouterRequest {
+  model: string;
+  messages: OpenRouterMessage[];
+  stream: boolean;
+  temperature?: number;
+  max_tokens?: number;
+  top_p?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  tools?: Array<{
+    type: 'function';
+    function: {
+      name: string;
+      description: string;
+      parameters: any;
+    };
+  }>;
+  tool_choice?: 'auto' | 'none' | {
+    type: 'function';
+    function: {
+      name: string;
+    };
+  };
+}
+
+// Function definitions for artifacts
+const ARTIFACT_FUNCTIONS = [
+  {
+    type: 'function' as const,
+    function: {
+      name: 'create_artifacts',
+      description: 'Create interactive artifacts like games, applications, visualizations, or code examples',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: 'Descriptive name for the artifact (e.g., "Flappy Bird Game", "Data Visualization Dashboard")'
+          },
+          type: {
+            type: 'string',
+            enum: [
+              'html', 'react', 'python', 'javascript', 'typescript', 
+              'markdown', 'json', 'csv', 'sql', 'svg', 'chart', 'game'
+            ],
+            description: 'Type of artifact to create'
+          },
+          content: {
+            type: 'string',
+            description: 'The complete content/code for the artifact'
+          },
+          description: {
+            type: 'string',
+            description: 'Brief description of what the artifact does'
+          },
+          tags: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Tags to categorize the artifact'
+          }
+        },
+        required: ['name', 'type', 'content']
+      }
+    }
+  }
+];
 
 export async function* streamChatCompletion(
-  messages: Message[], 
-  model: 'gemini-2.5-flash' | 'gemini-2.5-pro' = 'gemini-2.5-flash',
-  customSystemPrompt: string = ''
-): AsyncGenerator<{ content: string; artifacts?: Artifact[]; toolResults?: any[]; isThinking?: boolean }, void, unknown> {
-  try {
-    const geminiModel = genAI.getGenerativeModel({ 
-      model: model,
-      generationConfig: {
-        temperature: 0.7,
-        topP: 0.8,
-        topK: 40,
-        maxOutputTokens: 8192,
-      },
-      tools: [{
-        functionDeclarations: toolService.getAvailableTools().map(tool => ({
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.parameters
-        }))
-      }]
-    });
+  messages: Message[],
+  model: string = 'openrouter/horizon-alpha',
+  customSystemPrompt?: string,
+  config?: Partial<ChatConfig>
+): AsyncGenerator<StreamChunk> {
+  if (!OPENROUTER_API_KEY) {
+    throw new Error('OpenRouter API key not configured. Please add VITE_OPENROUTER_API_KEY to your .env file.');
+  }
 
-    const baseSystemPrompt = `You are Kana, India's first intelligent AI chatbot assistant. You are helpful, knowledgeable, and provide accurate information with a friendly personality.
+  const systemPrompt = customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
+  
+  // Convert messages to OpenRouter format
+  const openRouterMessages: OpenRouterMessage[] = [
+    { role: 'system', content: systemPrompt }
+  ];
 
-CRITICAL TOOL CALLING INSTRUCTIONS:
-When you need to use tools, you MUST call them using the exact function calling format. Here's how tool calling works:
-
-1. TOOL AVAILABILITY:
-   - web_search: Search the web for current information, news, recent events
-   - web_scrape: Extract content from specific website URLs  
-   - generate_image: Create high-quality images from text descriptions
-
-2. TOOL CALLING FORMAT:
-   You call tools by using the function calling mechanism. The system will automatically handle the tool execution.
-   
-   For web_search: Call with parameter "query" (string)
-   For web_scrape: Call with parameter "url" (string) 
-   For generate_image: Call with parameters "prompt" (string), optional "size", "style", "quality"
-
-3. TOOL USAGE GUIDELINES:
-   - Use web_search when users ask for current information, news, or recent events
-   - Use web_scrape when users want to read content from specific websites
-   - Use generate_image when users ask you to create, generate, make, or draw images
-   - Always explain what tools you're using and why
-   - Continue your response naturally after tool execution
-   - Provide comprehensive analysis of tool results
-
-4. MODEL-SPECIFIC LIMITS:
-   ${model === 'gemini-2.5-pro' ? 'AGENTIC MODE: You can use unlimited tools in a single response to provide comprehensive answers. Use as many tools as needed.' : 'STANDARD MODE: Limit tool usage to 3 tools maximum per response for efficiency.'}
-
-5. TOOL RESULT HANDLING:
-   - Always acknowledge when tools are being executed
-   - Provide context about what information you're gathering
-   - Synthesize tool results into your response
-   - If tools fail, explain the limitation and provide alternative approaches
-
-ARTIFACT CREATION GUIDELINES:
-Create artifacts for substantial content like code, HTML, React components, visualizations, or interactive content.
-
-ARTIFACT TYPES AND USAGE:
-- text/html: For HTML pages, web apps, or interactive content
-- application/vnd.kana.react: For React components and interactive UIs
-- application/vnd.kana.code: For code snippets with syntax highlighting
-- image/svg+xml: For SVG graphics and diagrams
-- text/markdown: For formatted documents
-
-ARTIFACT FORMAT:
-When creating artifacts, use this exact format:
-[ARTIFACT:id:type:title]
-content here
-[/ARTIFACT]
-
-Example:
-[ARTIFACT:calculator:application/vnd.kana.react:Simple Calculator]
-import React, { useState } from 'react';
-
-export default function Calculator() {
-  const [result, setResult] = useState('0');
-  // ... component code
-}
-[/ARTIFACT]
-
-RESPONSE GUIDELINES:
-- Be helpful, accurate, and engaging
-- Use tools proactively when they would enhance your response
-- Create artifacts for substantial, reusable content
-- Provide clear explanations of your actions
-- Continue responding after tool execution completes
-
-${customSystemPrompt ? `\nCUSTOM INSTRUCTIONS:\n${customSystemPrompt}` : ''}
-
-Remember: You have access to real-time web search, web scraping, and image generation. Use these tools to provide the most current and comprehensive responses possible.`;
-
-    // Convert messages to Gemini format
-    const geminiMessages = messages.map(msg => ({
-      role: msg.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: msg.content }]
-    }));
-
-    // Add system prompt as first message
-    const chatHistory = [
-      {
-        role: 'user',
-        parts: [{ text: baseSystemPrompt }]
-      },
-      {
-        role: 'model', 
-        parts: [{ text: 'I understand. I am Kana, India\'s first intelligent AI chatbot assistant. I have access to web search, web scraping, and image generation tools, and I can create interactive artifacts. I\'m ready to help you with comprehensive, up-to-date information and create engaging content. How can I assist you today?' }]
-      },
-      ...geminiMessages
-    ];
-
-    const chat = geminiModel.startChat({
-      history: chatHistory.slice(0, -1)
-    });
-
-    const lastMessage = geminiMessages[geminiMessages.length - 1];
-    
-    // Show thinking animation for Agentic mode
-    if (model === 'gemini-2.5-pro') {
-      yield { content: '', isThinking: true };
-    }
-
-    const result = await chat.sendMessageStream(lastMessage.parts[0].text);
-
-    let fullContent = '';
-    let artifacts: Artifact[] = [];
-    let toolResults: any[] = [];
-    let toolCallCount = 0;
-    const maxToolCalls = model === 'gemini-2.5-pro' ? Infinity : 3;
-    let hasStartedContent = false;
-
-    try {
-      for await (const chunk of result.stream) {
-        // Handle text content
-        const chunkText = chunk.text();
-        if (chunkText) {
-          fullContent += chunkText;
-          hasStartedContent = true;
-          yield { content: fullContent, artifacts, toolResults };
+  for (const message of messages) {
+    if (message.role === 'user') {
+      const content: OpenRouterMessage['content'] = message.content;
+      
+      // Handle file uploads for multimodal support
+      if (message.files && message.files.length > 0) {
+        const contentArray: Array<{ type: 'text' | 'image_url'; text?: string; image_url?: { url: string } }> = [
+          { type: 'text', text: message.content }
+        ];
+        
+        for (const file of message.files) {
+          if (file.type.startsWith('image/')) {
+            contentArray.push({
+              type: 'image_url',
+              image_url: { url: file.url || `data:${file.type};base64,${file.content}` }
+            });
+          }
         }
+        
+        openRouterMessages.push({ role: 'user', content: contentArray });
+      } else {
+        openRouterMessages.push({ role: 'user', content });
+      }
+    } else if (message.role === 'assistant') {
+      const assistantMessage: OpenRouterMessage = { role: 'assistant', content: message.content };
+      
+      if (message.toolResults && message.toolResults.length > 0) {
+        assistantMessage.tool_calls = message.toolResults.map(result => ({
+          id: result.tool_call_id,
+          type: 'function',
+          function: {
+            name: 'create_artifacts',
+            arguments: result.content
+          }
+        }));
+      }
+      
+      openRouterMessages.push(assistantMessage);
+    } else if (message.role === 'tool') {
+      openRouterMessages.push({
+        role: 'tool',
+        content: message.content,
+        tool_call_id: message.toolResults?.[0]?.tool_call_id
+      });
+    }
+  }
 
-        // Handle function calls safely
-        const functionCalls = chunk.functionCalls();
-        if (functionCalls && Array.isArray(functionCalls) && toolCallCount < maxToolCalls) {
-          for (const functionCall of functionCalls) {
-            if (toolCallCount >= maxToolCalls) break;
+  const requestBody: OpenRouterRequest = {
+    model,
+    messages: openRouterMessages,
+    stream: true,
+    temperature: config?.temperature ?? 0.7,
+    max_tokens: config?.maxTokens ?? 4000,
+    top_p: config?.topP ?? 1,
+    frequency_penalty: config?.frequencyPenalty ?? 0,
+    presence_penalty: config?.presencePenalty ?? 0,
+    tools: ARTIFACT_FUNCTIONS,
+    tool_choice: 'auto'
+  };
+
+  try {
+    const response = await axios.post(
+      `${OPENROUTER_BASE_URL}/chat/completions`,
+      requestBody,
+      {
+        headers: {
+          'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+          'Content-Type': 'application/json',
+          'HTTP-Referer': window.location.origin,
+          'X-Title': 'CloakedChat'
+        },
+        responseType: 'stream'
+      }
+    );
+
+    let currentContent = '';
+    let currentArtifacts: Artifact[] = [];
+    let currentToolResults: ToolResult[] = [];
+    let isThinking = false;
+
+    for await (const chunk of response.data) {
+      const lines = chunk.toString().split('\n');
+      
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          
+          if (data === '[DONE]') {
+            return;
+          }
+          
+          try {
+            const parsed = JSON.parse(data);
             
-            try {
-              // Show tool execution status
-              if (!hasStartedContent) {
-                fullContent += `🔧 Using ${functionCall.name}...\n\n`;
-                yield { content: fullContent, artifacts, toolResults };
+            if (parsed.choices && parsed.choices[0]) {
+              const choice = parsed.choices[0];
+              
+              // Handle thinking state
+              if (choice.delta?.content === null && choice.finish_reason === null) {
+                isThinking = true;
+                yield { content: currentContent, isThinking: true };
+                continue;
               }
-
-              const toolResult = await toolService.executeTool(
-                functionCall.name,
-                functionCall.args
-              );
               
-              toolResults.push({
-                name: functionCall.name,
-                args: functionCall.args,
-                result: toolResult
-              });
+              // Handle content
+              if (choice.delta?.content) {
+                currentContent += choice.delta.content;
+                isThinking = false;
+                yield { 
+                  content: currentContent, 
+                  artifacts: currentArtifacts,
+                  toolResults: currentToolResults,
+                  isThinking: false 
+                };
+              }
               
-              toolCallCount++;
-              yield { content: fullContent, artifacts, toolResults };
-            } catch (toolError) {
-              console.error('Tool execution error:', toolError);
-              toolResults.push({
-                name: functionCall.name,
-                args: functionCall.args,
-                result: {
-                  success: false,
-                  error: toolError instanceof Error ? toolError.message : 'Tool execution failed'
+              // Handle tool calls
+              if (choice.delta?.tool_calls) {
+                for (const toolCall of choice.delta.tool_calls) {
+                  if (toolCall.function?.arguments) {
+                    try {
+                      const args = JSON.parse(toolCall.function.arguments);
+                      
+                      const artifact: Artifact = {
+                        id: `artifact_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+                        name: args.name,
+                        type: mapArtifactType(args.type),
+                        content: args.content,
+                        metadata: {
+                          title: args.name,
+                          description: args.description || '',
+                          language: args.type,
+                          tags: args.tags || [],
+                          created: Date.now(),
+                          lastModified: Date.now(),
+                          version: 1
+                        },
+                        createdAt: Date.now(),
+                        updatedAt: Date.now()
+                      };
+                      
+                      currentArtifacts.push(artifact);
+                      
+                      const toolResult: ToolResult = {
+                        tool_call_id: toolCall.id,
+                        role: 'tool',
+                        content: JSON.stringify(args)
+                      };
+                      
+                      currentToolResults.push(toolResult);
+                      
+                      yield { 
+                        content: currentContent, 
+                        artifacts: currentArtifacts,
+                        toolResults: currentToolResults,
+                        isThinking: false 
+                      };
+                    } catch (error) {
+                      console.error('Error parsing tool call arguments:', error);
+                    }
+                  }
                 }
-              });
-              yield { content: fullContent, artifacts, toolResults };
+              }
+              
+              // Handle finish
+              if (choice.finish_reason) {
+                yield { 
+                  content: currentContent, 
+                  artifacts: currentArtifacts,
+                  toolResults: currentToolResults,
+                  finishReason: choice.finish_reason,
+                  isThinking: false 
+                };
+              }
             }
+          } catch (error) {
+            console.error('Error parsing stream chunk:', error);
           }
         }
       }
-    } catch (streamError) {
-      console.error('Stream processing error:', streamError);
-      if (!hasStartedContent) {
-        fullContent = "I apologize, but I'm having trouble processing your request right now. Please try again in a moment.";
-      }
     }
-
-    // Process any artifacts in the final content
-    const processedResult = await processArtifacts(fullContent);
-    if (processedResult.artifacts.length > 0) {
-      artifacts = processedResult.artifacts;
-    }
-    
-    yield { content: processedResult.content, artifacts, toolResults };
-
   } catch (error) {
-    console.error('Gemini API Error:', error);
-    if (error instanceof Error && error.message.includes('API key')) {
-      yield { content: "I need a valid Google API key to function. Please add your VITE_GOOGLE_API_KEY to the .env file." };
-    } else {
-      yield { content: "I apologize, but I'm having trouble connecting right now. Please try again in a moment." };
-    }
+    console.error('Error in streamChatCompletion:', error);
+    throw error;
   }
 }
 
-async function processArtifacts(content: string): Promise<{ content: string; artifacts: Artifact[] }> {
-  const artifactRegex = /\[ARTIFACT:([^:]+):([^:]+):([^\]]+)\]([\s\S]*?)\[\/ARTIFACT\]/g;
-  const artifacts: Artifact[] = [];
-  let processedContent = content;
+function mapArtifactType(type: string): string {
+  const typeMap: Record<string, string> = {
+    'html': 'text/html',
+    'react': 'application/vnd.cloaked.react',
+    'python': 'application/vnd.cloaked.python',
+    'javascript': 'application/vnd.cloaked.javascript',
+    'typescript': 'application/vnd.cloaked.typescript',
+    'markdown': 'text/markdown',
+    'json': 'application/vnd.cloaked.json',
+    'csv': 'application/vnd.cloaked.csv',
+    'sql': 'application/vnd.cloaked.sql',
+    'svg': 'image/svg+xml',
+    'chart': 'application/vnd.cloaked.chart',
+    'game': 'application/vnd.cloaked.game'
+  };
+  
+  return typeMap[type] || 'text/plain';
+}
 
-  let match;
-  while ((match = artifactRegex.exec(content)) !== null) {
-    const [fullMatch, id, type, title, artifactContent] = match;
-    
-    try {
-      const result = await artifactManager.createArtifact(
-        id,
-        type as any,
-        artifactContent.trim(),
-        { title: title.trim() }
-      );
+export async function analyzeFile(file: File): Promise<string> {
+  if (!OPENROUTER_API_KEY) {
+    throw new Error('OpenRouter API key not configured');
+  }
 
-      if (result.success && result.artifact) {
-        artifacts.push(result.artifact);
-        
-        // Replace artifact markup with a placeholder
-        processedContent = processedContent.replace(
-          fullMatch,
-          `\n**${title}** (Interactive Content)\n\n*This content is displayed as an interactive artifact below.*\n`
-        );
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('model', 'openrouter/horizon-alpha');
+
+  try {
+    const response = await axios.post(
+      `${OPENROUTER_BASE_URL}/files/analyze`,
+      formData,
+      {
+        headers: {
+          'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+          'HTTP-Referer': window.location.origin,
+          'X-Title': 'CloakedChat'
+        }
       }
-    } catch (error) {
-      console.error('Error creating artifact:', error);
-    }
-  }
+    );
 
-  return { content: processedContent, artifacts };
+    return response.data.analysis;
+  } catch (error) {
+    console.error('Error analyzing file:', error);
+    throw error;
+  }
 }
+
+export const AVAILABLE_MODELS: Array<{
+  id: string;
+  name: string;
+  provider: string;
+  description: string;
+  maxTokens: number;
+  supportsMultimodal: boolean;
+  supportsFunctionCalling: boolean;
+}> = [
+  {
+    id: 'openrouter/horizon-alpha',
+    name: 'Horizon Alpha',
+    provider: 'Cloaked AI',
+    description: 'Most powerful Cloaked model, rumored to be GPT-5 mini in development',
+    maxTokens: 128000,
+    supportsMultimodal: true,
+    supportsFunctionCalling: true
+  },
+  {
+    id: 'openrouter/horizon-beta',
+    name: 'Horizon Beta',
+    provider: 'Cloaked AI',
+    description: 'Fast and efficient Cloaked model',
+    maxTokens: 128000,
+    supportsMultimodal: true,
+    supportsFunctionCalling: true
+  },
+  {
+    id: 'openrouter/horizon-gamma',
+    name: 'Horizon Gamma',
+    provider: 'Cloaked AI',
+    description: 'Balanced performance and speed',
+    maxTokens: 128000,
+    supportsMultimodal: true,
+    supportsFunctionCalling: true
+  }
+];

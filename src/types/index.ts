@@ -5,6 +5,9 @@ export interface Message {
   timestamp: number;
   artifacts?: Artifact[];
   toolResults?: any[];
+  files?: UploadedFile[];
+  isStreaming?: boolean;
+  isThinking?: boolean;
 }
 
 export interface Session {
@@ -13,13 +16,15 @@ export interface Session {
   messages: Message[];
   createdAt: number;
   updatedAt: number;
-  model?: 'gemini-2.5-flash' | 'gemini-2.5-pro';
+  model?: string;
+  systemPrompt?: string;
 }
 
 export interface StreamResponse {
   choices: Array<{
     delta: {
       content?: string;
+      tool_calls?: any[];
     };
     finish_reason?: string;
   }>;
@@ -27,21 +32,30 @@ export interface StreamResponse {
 
 export interface Artifact {
   id: string;
+  name: string;
   type: ArtifactType;
   content: string;
   metadata: ArtifactMetadata;
   renderState?: ArtifactRenderState;
   history?: ArtifactVersion[];
+  createdAt: number;
+  updatedAt: number;
 }
 
 export type ArtifactType = 
   | 'text/html'
-  | 'application/vnd.kana.react'
+  | 'application/vnd.cloaked.react'
   | 'text/markdown'
-  | 'application/vnd.kana.code'
+  | 'application/vnd.cloaked.code'
   | 'image/svg+xml'
-  | 'application/vnd.kana.chart'
-  | 'application/vnd.kana.game';
+  | 'application/vnd.cloaked.chart'
+  | 'application/vnd.cloaked.game'
+  | 'application/vnd.cloaked.python'
+  | 'application/vnd.cloaked.javascript'
+  | 'application/vnd.cloaked.typescript'
+  | 'application/vnd.cloaked.json'
+  | 'application/vnd.cloaked.csv'
+  | 'application/vnd.cloaked.sql';
 
 export interface ArtifactMetadata {
   title: string;
@@ -52,6 +66,8 @@ export interface ArtifactMetadata {
   lastModified: number;
   version: number;
   archived?: boolean;
+  tags?: string[];
+  category?: string;
 }
 
 export interface ArtifactRenderState {
@@ -77,4 +93,71 @@ export interface LibraryConfig {
 
 export interface AppSettings {
   customSystemPrompt: string;
+  theme: 'dark' | 'light' | 'auto';
+  fontSize: 'small' | 'medium' | 'large';
+  enableAnimations: boolean;
+  autoSave: boolean;
+  maxHistoryLength: number;
+}
+
+export interface UploadedFile {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  url?: string;
+  content?: string;
+  preview?: string;
+  uploadedAt: number;
+}
+
+export interface ToolCall {
+  id: string;
+  type: string;
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export interface ToolResult {
+  tool_call_id: string;
+  role: 'tool';
+  content: string;
+}
+
+export interface ModelConfig {
+  id: string;
+  name: string;
+  provider: string;
+  description: string;
+  maxTokens: number;
+  supportsMultimodal: boolean;
+  supportsFunctionCalling: boolean;
+  pricing?: {
+    input: number;
+    output: number;
+  };
+}
+
+export interface ChatConfig {
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  topP: number;
+  frequencyPenalty: number;
+  presencePenalty: number;
+  systemPrompt: string;
+}
+
+export interface PWAConfig {
+  name: string;
+  shortName: string;
+  description: string;
+  themeColor: string;
+  backgroundColor: string;
+  display: string;
+  orientation: string;
+  scope: string;
+  startUrl: string;
 }

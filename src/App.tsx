@@ -1,21 +1,29 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Menu, X, Settings } from 'lucide-react';
+import { Menu, X, Settings, Plus, Download, Upload, Trash2, Moon, Sun, Monitor } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Toaster, toast } from 'react-hot-toast';
+import { Helmet } from 'react-helmet-async';
 import { ChatMessage } from './components/ChatMessage';
 import { ChatInput } from './components/ChatInput';
 import { SessionSidebar } from './components/SessionSidebar';
 import { WelcomeScreen } from './components/WelcomeScreen';
 import { SettingsModal } from './components/SettingsModal';
-import { streamChatCompletion } from './services/aiService';
+import { streamChatCompletion, AVAILABLE_MODELS } from './services/aiService';
 import { 
   saveSessions, 
   loadSessions, 
   saveCurrentSessionId, 
   loadCurrentSessionId,
   createSession,
-  updateSession
+  updateSession,
+  deleteSession,
+  clearAllSessions,
+  exportSessions,
+  importSessions
 } from './services/sessionService';
-import { saveSettings, loadSettings } from './services/settingsService';
-import type { Session, Message, AppSettings } from './types';
+import { saveSettings, loadSettings, resetSettings } from './services/settingsService';
+import { fileService } from './services/fileService';
+import type { Session, Message, AppSettings, UploadedFile } from './types';
 
 function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -25,8 +33,16 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [streamingMessage, setStreamingMessage] = useState<Message | null>(null);
   const [isThinking, setIsThinking] = useState(false);
-  const [currentModel, setCurrentModel] = useState<'gemini-2.5-flash' | 'gemini-2.5-pro'>('gemini-2.5-flash');
-  const [settings, setSettings] = useState<AppSettings>({ customSystemPrompt: '' });
+  const [currentModel, setCurrentModel] = useState<string>('openrouter/horizon-alpha');
+  const [settings, setSettings] = useState<AppSettings>({
+    customSystemPrompt: '',
+    theme: 'dark',
+    fontSize: 'medium',
+    enableAnimations: true,
+    autoSave: true,
+    maxHistoryLength: 100
+  });
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -39,6 +55,9 @@ function App() {
     setSettings(loadedSettings);
     setSessions(loadedSessions);
     setCurrentSessionId(loadedCurrentSessionId);
+    
+    // Apply theme
+    applyTheme(loadedSettings.theme);
   }, []);
 
   // Auto-scroll to bottom
@@ -48,10 +67,10 @@ function App() {
 
   // Save sessions when they change
   useEffect(() => {
-    if (sessions.length > 0) {
+    if (sessions.length > 0 && settings.autoSave) {
       saveSessions(sessions);
     }
-  }, [sessions]);
+  }, [sessions, settings.autoSave]);
 
   // Save current session ID when it changes
   useEffect(() => {
@@ -59,6 +78,26 @@ function App() {
       saveCurrentSessionId(currentSessionId);
     }
   }, [currentSessionId]);
+
+  const applyTheme = (theme: string) => {
+    const root = document.documentElement;
+    if (theme === 'dark') {
+      root.classList.add('dark');
+      root.classList.remove('light');
+    } else if (theme === 'light') {
+      root.classList.add('light');
+      root.classList.remove('dark');
+    } else {
+      // Auto theme - check system preference
+      if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        root.classList.add('dark');
+        root.classList.remove('light');
+      } else {
+        root.classList.add('light');
+        root.classList.remove('dark');
+      }
+    }
+  };
 
   const getCurrentSession = (): Session | null => {
     return sessions.find(s => s.id === currentSessionId) || null;
@@ -71,12 +110,14 @@ function App() {
       messages: [],
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      model: currentModel
+      model: currentModel,
+      systemPrompt: settings.customSystemPrompt
     };
 
     setSessions(prev => [newSession, ...prev]);
     setCurrentSessionId(newSession.id);
     setIsSidebarOpen(false);
+    setUploadedFiles([]);
   };
 
   const handleSelectSession = (sessionId: string) => {
@@ -84,6 +125,7 @@ function App() {
     setIsSidebarOpen(false);
     setStreamingMessage(null);
     setIsThinking(false);
+    setUploadedFiles([]);
     
     // Update current model based on session
     const session = sessions.find(s => s.id === sessionId);
@@ -100,7 +142,7 @@ function App() {
     }
   };
 
-  const handleModelChange = (model: 'gemini-2.5-flash' | 'gemini-2.5-pro') => {
+  const handleModelChange = (model: string) => {
     setCurrentModel(model);
     
     // Update current session's model
@@ -116,6 +158,30 @@ function App() {
   const handleSettingsChange = (newSettings: AppSettings) => {
     setSettings(newSettings);
     saveSettings(newSettings);
+    applyTheme(newSettings.theme);
+  };
+
+  const handleFileUpload = async (files: File[]) => {
+    const processingPromises = files.map(async (file) => {
+      try {
+        const processedFile = await fileService.processFile(file);
+        return processedFile;
+      } catch (error) {
+        toast.error(`Failed to process ${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        return null;
+      }
+    });
+
+    const processedFiles = (await Promise.all(processingPromises)).filter(Boolean) as UploadedFile[];
+    setUploadedFiles(prev => [...prev, ...processedFiles]);
+    
+    if (processedFiles.length > 0) {
+      toast.success(`Successfully uploaded ${processedFiles.length} file(s)`);
+    }
+  };
+
+  const handleRemoveFile = (fileId: string) => {
+    setUploadedFiles(prev => prev.filter(f => f.id !== fileId));
   };
 
   const handleSendMessage = async (content: string) => {
@@ -130,7 +196,7 @@ function App() {
     
     // Create new session if none exists
     if (!sessionId) {
-      const newSession = createSession(content);
+      const newSession = createSession();
       newSession.model = currentModel;
       setSessions(prev => [newSession, ...prev]);
       setCurrentSessionId(newSession.id);
@@ -141,7 +207,8 @@ function App() {
       id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
       role: 'user',
       content,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      files: uploadedFiles.length > 0 ? uploadedFiles : undefined
     };
 
     // Add user message
@@ -150,12 +217,6 @@ function App() {
         ...(prev.find(s => s.id === sessionId)?.messages || []),
         userMessage
       ]);
-      
-      // Update session title if it's the first message
-      const session = updated.find(s => s.id === sessionId);
-      if (session && session.messages.length === 1) {
-        session.title = content.length > 50 ? content.substring(0, 50) + '...' : content;
-      }
       
       return updated;
     });
@@ -183,7 +244,18 @@ function App() {
       let artifacts: any[] = [];
       let toolResults: any[] = [];
       
-      for await (const chunk of streamChatCompletion(messages, currentModel, settings.customSystemPrompt)) {
+      for await (const chunk of streamChatCompletion(
+        messages, 
+        currentModel, 
+        settings.customSystemPrompt,
+        {
+          temperature: 0.7,
+          maxTokens: 4000,
+          topP: 1,
+          frequencyPenalty: 0,
+          presencePenalty: 0
+        }
+      )) {
         if (chunk.isThinking) {
           setIsThinking(true);
           continue;
@@ -222,8 +294,10 @@ function App() {
 
       setStreamingMessage(null);
       setIsThinking(false);
+      setUploadedFiles([]); // Clear uploaded files after sending
     } catch (error) {
       console.error('Error sending message:', error);
+      toast.error('Failed to send message. Please try again.');
       setStreamingMessage(null);
       setIsThinking(false);
     } finally {
@@ -232,95 +306,194 @@ function App() {
     }
   };
 
+  const handleExportSessions = () => {
+    try {
+      const data = exportSessions();
+      const blob = new Blob([data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `cloaked-chat-sessions-${new Date().toISOString().split('T')[0]}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      toast.success('Sessions exported successfully');
+    } catch (error) {
+      toast.error('Failed to export sessions');
+    }
+  };
+
+  const handleImportSessions = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = e.target?.result as string;
+        const importedSessions = importSessions(data);
+        setSessions(importedSessions);
+        toast.success(`Successfully imported ${importedSessions.length} sessions`);
+      } catch (error) {
+        toast.error('Failed to import sessions');
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleClearAllSessions = () => {
+    if (window.confirm('Are you sure you want to clear all sessions? This action cannot be undone.')) {
+      clearAllSessions();
+      setSessions([]);
+      setCurrentSessionId(null);
+      toast.success('All sessions cleared');
+    }
+  };
+
   const currentSession = getCurrentSession();
   const hasMessages = currentSession && (currentSession.messages.length > 0 || streamingMessage);
 
   return (
-    <div className="flex h-screen bg-black overflow-hidden">
-      {/* Sidebar */}
-      <SessionSidebar
-        sessions={sessions}
-        currentSessionId={currentSessionId}
-        onSelectSession={handleSelectSession}
-        onNewSession={handleNewSession}
-        onDeleteSession={handleDeleteSession}
-        isOpen={isSidebarOpen}
-        onClose={() => setIsSidebarOpen(false)}
-      />
+    <>
+      <Helmet>
+        <title>CloakedChat - AI Chatbot</title>
+        <meta name="description" content="Powerful AI Chatbot powered by Horizon Alpha" />
+        <meta name="theme-color" content="#000000" />
+        <link rel="icon" href="/favicon.ico" />
+      </Helmet>
 
-      {/* Main Content */}
-      <div className="flex-1 flex flex-col min-h-screen">
-        {/* Header */}
-        <header className="bg-black/90 backdrop-blur-xl border-b border-gray-800/50 px-3 md:px-4 lg:px-6 py-3 md:py-4 flex items-center gap-3 md:gap-4 shadow-2xl safe-area-inset-top">
-          <button
-            onClick={() => setIsSidebarOpen(true)}
-            className="lg:hidden p-2 md:p-3 hover:bg-gray-800/50 rounded-xl transition-all duration-200"
-          >
-            <Menu size={18} className="md:w-5 md:h-5 text-gray-400" />
-          </button>
-          
-          <div className="flex-1 flex items-center gap-3 md:gap-4 min-w-0">
-            <div className="w-8 h-8 md:w-10 md:h-10 bg-white rounded-xl md:rounded-2xl flex items-center justify-center shadow-lg flex-shrink-0">
-              <div className="w-5 h-5 md:w-6 md:h-6 bg-black rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-xs md:text-sm">K</span>
+      <div className="flex h-screen bg-gray-50 dark:bg-gray-900 overflow-hidden">
+        {/* Sidebar */}
+        <SessionSidebar
+          sessions={sessions}
+          currentSessionId={currentSessionId}
+          onSelectSession={handleSelectSession}
+          onNewSession={handleNewSession}
+          onDeleteSession={handleDeleteSession}
+          isOpen={isSidebarOpen}
+          onClose={() => setIsSidebarOpen(false)}
+        />
+
+        {/* Main Content */}
+        <div className="flex-1 flex flex-col min-h-screen">
+          {/* Header */}
+          <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex items-center gap-4 shadow-sm">
+            <button
+              onClick={() => setIsSidebarOpen(true)}
+              className="lg:hidden p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              <Menu size={20} className="text-gray-600 dark:text-gray-300" />
+            </button>
+            
+            <div className="flex-1 flex items-center gap-3 min-w-0">
+              <div className="w-8 h-8 bg-gradient-to-br from-purple-500 to-blue-500 rounded-lg flex items-center justify-center shadow-sm flex-shrink-0">
+                <span className="text-white font-bold text-sm">C</span>
               </div>
+              <h1 className="text-lg font-semibold text-gray-900 dark:text-white truncate">
+                {currentSession?.title || 'CloakedChat'}
+              </h1>
             </div>
-            <h1 className="text-lg md:text-xl lg:text-2xl font-semibold text-white truncate">
-              {currentSession?.title || 'Kana'}
-            </h1>
-          </div>
 
-          <button
-            onClick={() => setIsSettingsOpen(true)}
-            className="p-2 md:p-3 hover:bg-gray-800/50 rounded-xl transition-all duration-200 flex-shrink-0"
-          >
-            <Settings size={18} className="md:w-5 md:h-5 text-gray-400" />
-          </button>
-        </header>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleExportSessions}
+                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                title="Export sessions"
+              >
+                <Download size={18} className="text-gray-600 dark:text-gray-300" />
+              </button>
+              
+              <label className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors cursor-pointer" title="Import sessions">
+                <Upload size={18} className="text-gray-600 dark:text-gray-300" />
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={handleImportSessions}
+                  className="hidden"
+                />
+              </label>
 
-        {/* Chat Area */}
-        <div className="flex-1 overflow-hidden flex flex-col">
-          {!hasMessages ? (
-            <WelcomeScreen 
-              onSendMessage={handleSendMessage} 
+              <button
+                onClick={handleClearAllSessions}
+                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors text-red-500"
+                title="Clear all sessions"
+              >
+                <Trash2 size={18} />
+              </button>
+
+              <button
+                onClick={() => setIsSettingsOpen(true)}
+                className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                title="Settings"
+              >
+                <Settings size={18} className="text-gray-600 dark:text-gray-300" />
+              </button>
+            </div>
+          </header>
+
+          {/* Chat Area */}
+          <div className="flex-1 overflow-hidden flex flex-col">
+            {!hasMessages ? (
+              <WelcomeScreen 
+                onSendMessage={handleSendMessage} 
+                currentModel={currentModel}
+                onModelChange={handleModelChange}
+                onFileUpload={handleFileUpload}
+                uploadedFiles={uploadedFiles}
+                onRemoveFile={handleRemoveFile}
+              />
+            ) : (
+              <div className="flex-1 overflow-y-auto bg-gray-50 dark:bg-gray-900">
+                <div className="max-w-4xl mx-auto">
+                  {currentSession?.messages.map((message) => (
+                    <ChatMessage key={message.id} message={message} />
+                  ))}
+                  {streamingMessage && (
+                    <ChatMessage 
+                      message={streamingMessage} 
+                      isStreaming={true} 
+                      isThinking={isThinking}
+                    />
+                  )}
+                  <div ref={messagesEndRef} />
+                </div>
+              </div>
+            )}
+            
+            <ChatInput
+              onSendMessage={handleSendMessage}
+              disabled={isLoading}
+              placeholder={hasMessages ? "Message CloakedChat..." : "Ask me anything..."}
               currentModel={currentModel}
+              onModelChange={handleModelChange}
+              onFileUpload={handleFileUpload}
+              uploadedFiles={uploadedFiles}
+              onRemoveFile={handleRemoveFile}
             />
-          ) : (
-            <div className="flex-1 overflow-y-auto bg-black">
-              <div className="max-w-5xl mx-auto">
-                {currentSession?.messages.map((message) => (
-                  <ChatMessage key={message.id} message={message} />
-                ))}
-                {streamingMessage && (
-                  <ChatMessage 
-                    message={streamingMessage} 
-                    isStreaming={true} 
-                    isThinking={isThinking}
-                  />
-                )}
-                <div ref={messagesEndRef} />
-              </div>
-            </div>
-          )}
-          
-          <ChatInput
-            onSendMessage={handleSendMessage}
-            disabled={isLoading}
-            placeholder={hasMessages ? "Message Kana..." : "Ask me anything..."}
-            currentModel={currentModel}
-            onModelChange={handleModelChange}
-          />
+          </div>
         </div>
+
+        {/* Settings Modal */}
+        <SettingsModal
+          isOpen={isSettingsOpen}
+          onClose={() => setIsSettingsOpen(false)}
+          settings={settings}
+          onSettingsChange={handleSettingsChange}
+        />
       </div>
 
-      {/* Settings Modal */}
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        settings={settings}
-        onSettingsChange={handleSettingsChange}
+      <Toaster
+        position="top-right"
+        toastOptions={{
+          duration: 4000,
+          style: {
+            background: '#363636',
+            color: '#fff',
+          },
+        }}
       />
-    </div>
+    </>
   );
 }
 
