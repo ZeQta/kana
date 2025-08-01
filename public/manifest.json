@@ -1,7 +1,7 @@
 {
-  "name": "Kana - Know More Be More",
-  "short_name": "Kana",
-  "description": "India's first Intelligent AI Chatbot with Interactive Artifacts",
+  "name": "CloakedChat",
+  "short_name": "CloakedChat",
+  "description": "CloakedChat - Powerful AI Chatbot with interactive artifacts",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#000000",
